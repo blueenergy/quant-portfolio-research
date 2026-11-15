@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quant-portfolio-research"
+version = "0.1.0"
+description = "Portfolio research worker (parameter sweeps, regime/industry research)"
+requires-python = ">=3.11"
+dependencies = [
+  "pandas>=2.0.0",
+  "numpy>=1.24.0",
+  "pymongo>=4.5",
+  "python-dotenv>=1.0.0",
+  "pyyaml>=5.4",
+  "boto3>=1.28.0",
+  "pyarrow>=14.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "mongomock>=4.1"]
+
+[tool.setuptools]
+py-modules = ["research_db"]
+packages = [
+  "analysis",
+  "analysis.core",
+  "analysis.factor",
+  "analysis.reporting",
+  "analysis.sweep",
+  "observability",
+  "shared",
+  "tools",
+  "utils",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
