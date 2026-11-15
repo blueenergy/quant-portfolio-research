@@ -6,3 +6,5 @@
 .pytest_cache
 logs
 reports
+data-access-lib/.git
+**/.git
