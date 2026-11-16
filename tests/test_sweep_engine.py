@@ -575,3 +575,40 @@ def test_cgroup_memory_metrics_tolerates_unavailable_or_unlimited_files(tmp_path
     assert metrics["utilization_pct"] is None
     assert metrics["max_events"] is None
     assert metrics["oom_kill_events"] is None
+
+
+def test_merge_base_columns_carries_model_score_and_industry():
+    """Trailing variants are rebuilt from the score panel.
+
+    Columns merged in after the base build (model_score from quant_ml, SW L1
+    labels) never reach the rebuilt frame. Without model_score a
+    ``score_column=model_score`` sweep returns no rows at all.
+    """
+    import pandas as pd
+    from analysis.sweep.sweep_engine import merge_base_columns
+
+    base = pd.DataFrame(
+        {
+            "symbol": ["000001.SZ", "000002.SZ"],
+            "score_date": ["20261112", "20261112"],
+            "model_score": [0.9, 0.1],
+            "sw_l1_code": ["801080.SI", "801780.SI"],
+            "vol_20d_annual": [0.3, 0.4],
+            "exit_reason_20d": ["horizon", "trailing_stop"],
+        }
+    )
+    rebuilt = pd.DataFrame(
+        {
+            "symbol": ["000001.SZ", "000002.SZ"],
+            "score_date": ["20261112", "20261112"],
+            "exit_reason_20d": ["trailing_stop", "horizon"],
+        }
+    )
+
+    merged = merge_base_columns(base, rebuilt)
+
+    assert "model_score" in merged.columns
+    assert "sw_l1_code" in merged.columns
+    assert merged["model_score"].tolist() == [0.9, 0.1]
+    # Columns the rebuilt frame already carries are not overwritten.
+    assert merged["exit_reason_20d"].tolist() == ["trailing_stop", "horizon"]

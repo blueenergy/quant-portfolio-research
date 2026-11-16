@@ -741,6 +741,7 @@ def run_research_job(
     from analysis.sweep.sweep_engine import (
         load_panel_cache,
         log_sweep_perf,
+        merge_base_columns,
         merge_volatility_columns,
         panel_cache_key,
         save_panel_cache,
@@ -959,7 +960,10 @@ def run_research_job(
                 dataset_local = base_dataset.copy()
             else:
                 dataset_local = backtester.build_dataset_from_panel(score_panel, trailing_stop_pct=trailing_value)
-                dataset_local = merge_volatility_columns(base_dataset, dataset_local)
+                # Rebuilt from the score panel: it lacks model_score and the SW
+                # columns attached after the base build. Copying them is what
+                # makes trailing variants runnable for model-score research.
+                dataset_local = merge_base_columns(base_dataset, dataset_local)
             dataset_local = add_weighted_score_columns(dataset_local, score_sweeps)
             if intra_period_cash and needs_regime_cash:
                 dataset_local = backtester.add_live_cash_return_columns(
@@ -1060,6 +1064,7 @@ def run_research_job(
                     cash_on_dates=cash_on_dates,
                     regime_cash_on_dates_by_rule=regime_cash_on_dates_by_rule or None,
                     intra_period_cash=intra_period_cash and needs_regime_cash,
+                    price_cache=getattr(backtester, "price_cache", None),
                 )
                 for row in part_local.get("rows") or []:
                     row["entry_stock_filter"] = (

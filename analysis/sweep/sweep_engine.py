@@ -729,6 +729,33 @@ def run_outer_jobs(
     return rows
 
 
+def merge_base_columns(base_dataset: pd.DataFrame, target_dataset: pd.DataFrame) -> pd.DataFrame:
+    """Copy columns the rebuilt trailing dataset lacks from the base dataset.
+
+    A trailing variant is rebuilt from the score panel, so everything attached
+    after that build is missing: ``model_score`` (merged from quant_ml), the SW
+    L1/regime labels, and any future overlay. Without them a sweep on
+    ``score_column=model_score`` sees an all-NaN column and returns no rows at
+    all, and industry-neutral construction has no industry to neutralise.
+    """
+    if base_dataset is None or target_dataset is None or len(target_dataset) == 0:
+        return target_dataset
+    keys = ["symbol", "score_date"]
+    if not all(key in target_dataset.columns for key in keys):
+        return target_dataset
+    if not all(key in base_dataset.columns for key in keys):
+        return target_dataset
+    extra = [
+        column
+        for column in base_dataset.columns
+        if column not in target_dataset.columns and column not in keys
+    ]
+    if not extra:
+        return target_dataset
+    right = base_dataset[keys + extra].drop_duplicates(subset=keys)
+    return target_dataset.merge(right, on=keys, how="left")
+
+
 def merge_volatility_columns(base_dataset: pd.DataFrame, target_dataset: pd.DataFrame) -> pd.DataFrame:
     """Copy volatility/path feature columns from a base panel onto a trailing variant."""
     if base_dataset.empty or target_dataset.empty:
