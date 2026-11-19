@@ -11,7 +11,7 @@ required, and production scoring never writes ``stock_scores``.
 from __future__ import annotations
 
 import os
-from typing import Optional
+from typing import List, Optional
 
 import pandas as pd
 from pymongo import MongoClient
@@ -89,6 +89,47 @@ def load_model_scores_range(
     if not rows:
         return pd.DataFrame(columns=["ts_code", "score", "trade_date"])
     return pd.DataFrame(rows)
+
+
+def load_model_score_dates(
+    model_id: str,
+    *,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    research_only: bool = True,
+    mongo_uri: Optional[str] = None,
+    db_name: Optional[str] = None,
+    enabled: Optional[bool] = None,
+) -> List[str]:
+    """Distinct prediction dates for one model, optionally research-only.
+
+    The portfolio-research "anchor on model dates" mode needs the schedule,
+    not the cross-sections. Research-only is the default because a live model
+    can also carry daily shadow rows after its research backfill ends; mixing
+    those into the anchor would add off-grid dates.
+    """
+    if not (adapter_enabled() if enabled is None else enabled):
+        return []
+    uri = mongo_uri or os.getenv("MONGO_URI", "")
+    db = db_name or os.getenv("QUANT_ML_DB", "quant_ml")
+    if not uri:
+        raise RuntimeError("MONGO_URI required when MODEL_SCORE_ADAPTER_ENABLED=1")
+    query: dict = {"model_id": model_id}
+    if research_only:
+        query["research"] = True
+    date_filter = {}
+    if start_date:
+        date_filter["$gte"] = str(start_date)
+    if end_date:
+        date_filter["$lte"] = str(end_date)
+    if date_filter:
+        query["trade_date"] = date_filter
+    client = MongoClient(uri)
+    try:
+        dates = client[db]["model_predictions"].distinct("trade_date", query)
+    finally:
+        client.close()
+    return sorted(str(value) for value in dates if value)
 
 
 def merge_model_score_into_dataset(

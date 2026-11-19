@@ -856,6 +856,37 @@ def run_research_job(
         except Exception as exc:
             raise RuntimeError(f"model score merge failed for {model_id}: {exc}") from exc
 
+    anchor_mode = str(params.get("rebalance_anchor") or "").strip()
+    anchor_model_id = str(params.get("rebalance_anchor_model_id") or model_id).strip()
+    if anchor_mode == "model_predictions" and anchor_model_id:
+        from analysis.core.model_scores import load_model_score_dates
+
+        anchor_dates = load_model_score_dates(
+            anchor_model_id,
+            start_date=start_date,
+            end_date=end_date,
+            research_only=bool(params.get("rebalance_anchor_research_only", True)),
+            enabled=True,
+        )
+        if not anchor_dates:
+            raise RuntimeError(
+                f"rebalance_anchor=model_predictions found no dates for "
+                f"model_id={anchor_model_id} in {start_date}..{end_date}"
+            )
+        before = len(base_dataset)
+        base_dataset = base_dataset[
+            base_dataset["score_date"].astype(str).isin(anchor_dates)
+        ].reset_index(drop=True)
+        print(
+            f"rebalance anchor: model_id={anchor_model_id} dates={len(anchor_dates)} "
+            f"rows {before}->{len(base_dataset)}",
+            flush=True,
+        )
+        if base_dataset.empty:
+            raise RuntimeError(
+                f"rebalance_anchor=model_predictions left no rows for {anchor_model_id}"
+            )
+
     if path_gate_values != ["off"]:
         from analysis.core.path_features import add_path_feature_columns
 
