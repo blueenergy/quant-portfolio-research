@@ -19,6 +19,7 @@ from stock_data_access.index_constituents import (
 )
 from stock_data_access.market import MarketDataAccess
 from stock_data_access.mongo_context import get_db
+from stock_data_access.prices import symbol_variants
 from stock_data_access.sw import SwDataAccess
 
 log = logging.getLogger(__name__)
@@ -37,6 +38,9 @@ class ResearchDataAccess:
         self.stock_scores = self._app_db["stock_scores"]
         self.entropy_scores = self._app_db["entropy_scores"]
         self.money_flow = self.data_db["money_flow"]
+        # Valuation rows (pe/pb/ps/dv and market cap). Keyed on ts_code, not
+        # symbol: ~14M rows, so a symbol-keyed scan full-collects.
+        self.daily_basic = self.data_db["financial_daily_basic"]
         self.index_constituents = self.data_db["index_constituents"]
         self.sw_index_member = self.data_db["sw_index_member"]
         self.sw_index_classify = self.data_db["sw_index_classify"]
@@ -96,6 +100,34 @@ class ResearchDataAccess:
             return list(coll.find({"symbol": symbol}).sort("trade_date", 1).limit(30))
         except Exception as exc:
             log.warning("money_flow read failed for %s: %s", symbol, exc, exc_info=True)
+            return []
+
+    def find_daily_basic_by_symbol(
+        self,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+        projection: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Query ``financial_daily_basic`` by its ts_code index.
+
+        The collection is keyed on ``ts_code`` (suffixed), so a symbol-based
+        scan over ~14M rows collects the whole collection. Resolve to the
+        suffixed variant first.
+        """
+        code = str(symbol)
+        variants = symbol_variants(code)
+        ts_code = next((item for item in variants if "." in item), code)
+        proj = projection or {"trade_date": 1, "total_mv": 1, "_id": 0}
+        try:
+            return list(
+                self.daily_basic.find(
+                    {"ts_code": ts_code, "trade_date": {"$gte": start_date, "$lte": end_date}},
+                    proj,
+                ).sort("trade_date", 1)
+            )
+        except Exception as exc:
+            log.warning("daily_basic read failed for %s: %s", symbol, exc, exc_info=True)
             return []
 
     def get_sw_index_prices(
