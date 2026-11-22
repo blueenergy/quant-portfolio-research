@@ -53,15 +53,18 @@ def load_model_scores_range(
     *,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    prediction_kind: Optional[str] = None,
     mongo_uri: Optional[str] = None,
     db_name: Optional[str] = None,
     enabled: Optional[bool] = None,
 ) -> pd.DataFrame:
     """Bulk load one model's scores over a date range.
 
-    The per-date loader above is fine for a handful of dates; a multi-year
-    research panel asks for thousands and would issue one query each. This
-    version uses a single range query.
+    ``prediction_kind`` separates the two streams that can share a model_id:
+    ``research`` (point-in-time backfill, ``research=true``) and ``shadow``
+    (live artifact rows, ``shadow=true``). ``None`` keeps the legacy behaviour
+    and merges every row for the model_id; new research jobs pass ``research``
+    explicitly so the end date cannot silently pull in shadow scores.
     """
     if not (adapter_enabled() if enabled is None else enabled):
         return pd.DataFrame(columns=["ts_code", "score", "trade_date"])
@@ -70,6 +73,19 @@ def load_model_scores_range(
     if not uri:
         raise RuntimeError("MONGO_URI required when MODEL_SCORE_ADAPTER_ENABLED=1")
     query = {"model_id": model_id}
+    if prediction_kind == "research":
+        # Legacy backfills predate the research/shadow flags; treat unflagged
+        # rows as research, but never pull shadow rows into a research job.
+        query["$or"] = [
+            {"research": True},
+            {"research": {"$ne": True}, "shadow": {"$ne": True}},
+        ]
+    elif prediction_kind == "shadow":
+        query["shadow"] = True
+    elif prediction_kind:
+        raise ValueError(
+            f"prediction_kind must be 'research', 'shadow' or None, got {prediction_kind!r}"
+        )
     date_filter = {}
     if start_date:
         date_filter["$gte"] = str(start_date)
@@ -138,6 +154,7 @@ def merge_model_score_into_dataset(
     *,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    prediction_kind: Optional[str] = None,
     column: str = "model_score",
     ffill_limit: int = 20,
     enabled: Optional[bool] = None,
@@ -148,6 +165,9 @@ def merge_model_score_into_dataset(
     the rebalance dates. Carry it forward for at most ``ffill_limit`` sessions
     so a daily dataset sees the score that was live during each holding period,
     without letting a stale score survive past the next retrain.
+
+    ``prediction_kind`` selects ``research`` or ``shadow`` rows; ``None`` keeps
+    the pre-P0 behaviour (all rows for the model_id) for legacy jobs.
     """
     if "score_date" not in dataset.columns or "symbol" not in dataset.columns:
         raise ValueError("dataset must include score_date and symbol")
@@ -155,6 +175,7 @@ def merge_model_score_into_dataset(
         model_id,
         start_date=start_date,
         end_date=end_date,
+        prediction_kind=prediction_kind,
         enabled=enabled,
     )
     out = dataset.copy()

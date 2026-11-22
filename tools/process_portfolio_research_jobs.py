@@ -838,21 +838,33 @@ def run_research_job(
     if model_id:
         from analysis.core.model_scores import merge_model_score_into_dataset
 
+        # New jobs carry an explicit kind from the API/UI. Missing means a
+        # legacy job created before P0; keep its old all-rows behaviour rather
+        # than silently changing a rerun's result.
+        prediction_kind = str(params.get("prediction_kind") or "").strip() or None
         try:
             base_dataset = merge_model_score_into_dataset(
                 base_dataset,
                 model_id,
                 start_date=start_date,
                 end_date=end_date,
+                prediction_kind=prediction_kind,
                 column="model_score",
                 ffill_limit=20,
                 enabled=True,
             )
             filled = int(base_dataset["model_score"].notna().sum())
             print(
-                f"model score merged: model_id={model_id} rows={len(base_dataset)} filled={filled}",
+                f"model score merged: model_id={model_id} "
+                f"prediction_kind={prediction_kind or 'legacy'} "
+                f"rows={len(base_dataset)} filled={filled}",
                 flush=True,
             )
+            payload["prediction_kind"] = prediction_kind
+            payload["prediction_set"] = {
+                "model_id": model_id,
+                "kind": prediction_kind,
+            }
         except Exception as exc:
             raise RuntimeError(f"model score merge failed for {model_id}: {exc}") from exc
 
