@@ -188,7 +188,22 @@ def merge_model_score_into_dataset(
     scores = scores.drop_duplicates(subset=["score_date", "symbol"], keep="last")
     out = out.merge(scores, on=["score_date", "symbol"], how="left")
     out = out.sort_values(["symbol", "score_date"], kind="mergesort").reset_index(drop=True)
+
+    # ``ffill`` counts rows, so a symbol that leaves the panel and re-enters
+    # years later would carry its old score across the missing rows. Measure
+    # staleness in panel sessions instead: a score may fill only the next
+    # ``ffill_limit`` dates, even when the symbol has no rows in between.
+    session_index = {
+        trade_date: index
+        for index, trade_date in enumerate(sorted(out["score_date"].unique()))
+    }
+    out["_session_index"] = out["score_date"].map(session_index)
+    out["_score_origin"] = out["_session_index"].where(out[column].notna())
+    out["_score_origin"] = out.groupby("symbol", sort=False)["_score_origin"].ffill()
+    gap = out["_session_index"] - out["_score_origin"]
     out[column] = out.groupby("symbol", sort=False)[column].ffill(limit=int(ffill_limit))
+    out.loc[gap > int(ffill_limit), column] = float("nan")
+    out = out.drop(columns=["_session_index", "_score_origin"])
     out[column] = pd.to_numeric(out[column], errors="coerce")
     return out
 
