@@ -10,11 +10,14 @@ required, and production scoring never writes ``stock_scores``.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import List, Optional
 
 import pandas as pd
 from pymongo import MongoClient
+
+log = logging.getLogger(__name__)
 
 
 def adapter_enabled() -> bool:
@@ -54,6 +57,7 @@ def load_model_scores_range(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     prediction_kind: Optional[str] = None,
+    prediction_source: Optional[str] = None,
     mongo_uri: Optional[str] = None,
     db_name: Optional[str] = None,
     enabled: Optional[bool] = None,
@@ -65,6 +69,12 @@ def load_model_scores_range(
     (live artifact rows, ``shadow=true``). ``None`` keeps the legacy behaviour
     and merges every row for the model_id; new research jobs pass ``research``
     explicitly so the end date cannot silently pull in shadow scores.
+
+    A model_id may also carry several research sources. Disjoint sources are
+    treated as segments of one series (the 2017-2024 backfill plus its 2026
+    extension); overlapping sources are ambiguous and refused unless
+    ``prediction_source`` names one. Silently picking ``keep="last"`` after
+    merging two protocols would make the result depend on read order.
     """
     if not (adapter_enabled() if enabled is None else enabled):
         return pd.DataFrame(columns=["ts_code", "score", "trade_date"])
@@ -86,6 +96,8 @@ def load_model_scores_range(
         raise ValueError(
             f"prediction_kind must be 'research', 'shadow' or None, got {prediction_kind!r}"
         )
+    if prediction_source:
+        query["source"] = prediction_source
     date_filter = {}
     if start_date:
         date_filter["$gte"] = str(start_date)
@@ -95,8 +107,16 @@ def load_model_scores_range(
         query["trade_date"] = date_filter
     client = MongoClient(uri)
     try:
+        predictions = client[db]["model_predictions"]
+        if not prediction_source:
+            _reject_overlapping_sources(
+                predictions,
+                query,
+                model_id=model_id,
+                prediction_kind=prediction_kind,
+            )
         rows = list(
-            client[db]["model_predictions"].find(
+            predictions.find(
                 query, {"_id": 0, "ts_code": 1, "score": 1, "trade_date": 1}
             )
         )
@@ -105,6 +125,58 @@ def load_model_scores_range(
     if not rows:
         return pd.DataFrame(columns=["ts_code", "score", "trade_date"])
     return pd.DataFrame(rows)
+
+
+def _reject_overlapping_sources(
+    predictions,
+    query: dict,
+    *,
+    model_id: str,
+    prediction_kind: Optional[str],
+) -> None:
+    """Refuse a model_id whose prediction sources overlap in the window.
+
+    Disjoint sources are intentional segments (old backfill + extension) and
+    are allowed; overlapping sources are two protocols competing for the same
+    (trade_date, ts_code), so the caller must name one with
+    ``prediction_source``.
+    """
+    groups = list(
+        predictions.aggregate(
+            [
+                {"$match": query},
+                {
+                    "$group": {
+                        "_id": "$source",
+                        "first": {"$min": "$trade_date"},
+                        "last": {"$max": "$trade_date"},
+                    }
+                },
+                {"$sort": {"first": 1}},
+            ]
+        )
+    )
+    if len(groups) <= 1:
+        return
+    for previous, current in zip(groups, groups[1:]):
+        if str(current.get("first") or "") <= str(previous.get("last") or ""):
+            raise ValueError(
+                f"ambiguous prediction sources for model_id={model_id} "
+                f"kind={prediction_kind or 'legacy'}: "
+                f"{previous.get('_id')!r} ({previous.get('first')}..{previous.get('last')}) "
+                f"overlaps {current.get('_id')!r} ({current.get('first')}..{current.get('last')}); "
+                "pass prediction_source to select one"
+            )
+    log.warning(
+        "model_id=%s kind=%s has %d disjoint prediction sources: %s",
+        model_id,
+        prediction_kind or "legacy",
+        len(groups),
+        ", ".join(
+            f"{group.get('_id')!r} ({group.get('first')}..{group.get('last')})"
+            for group in groups
+        ),
+    )
 
 
 def load_model_score_dates(
@@ -155,6 +227,7 @@ def merge_model_score_into_dataset(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     prediction_kind: Optional[str] = None,
+    prediction_source: Optional[str] = None,
     column: str = "model_score",
     ffill_limit: int = 20,
     enabled: Optional[bool] = None,
@@ -168,6 +241,8 @@ def merge_model_score_into_dataset(
 
     ``prediction_kind`` selects ``research`` or ``shadow`` rows; ``None`` keeps
     the pre-P0 behaviour (all rows for the model_id) for legacy jobs.
+    ``prediction_source`` disambiguates a model_id with overlapping research
+    sources; disjoint sources are loaded together as one series.
     """
     if "score_date" not in dataset.columns or "symbol" not in dataset.columns:
         raise ValueError("dataset must include score_date and symbol")
@@ -176,6 +251,7 @@ def merge_model_score_into_dataset(
         start_date=start_date,
         end_date=end_date,
         prediction_kind=prediction_kind,
+        prediction_source=prediction_source,
         enabled=enabled,
     )
     out = dataset.copy()

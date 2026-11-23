@@ -7,11 +7,14 @@ import pytest
 from analysis.core import model_scores
 
 
-def _fake_client(captured):
+def _fake_client(captured, groups=None):
     class Collection:
         def find(self, query, projection=None):
             captured.update(query)
             return []
+
+        def aggregate(self, pipeline):
+            return iter(list(groups or []))
 
     class Database:
         def __getitem__(self, name):
@@ -69,3 +72,48 @@ def test_invalid_kind_raises(monkeypatch):
         model_scores.load_model_scores_range(
             "m1", prediction_kind="live", enabled=True, mongo_uri="mongodb://x"
         )
+
+
+def test_overlapping_sources_raise(monkeypatch):
+    captured = {}
+    groups = [
+        {"_id": "source_a", "first": "20260101", "last": "20260601"},
+        {"_id": "source_b", "first": "20260501", "last": "20261201"},
+    ]
+    monkeypatch.setattr(model_scores, "MongoClient", _fake_client(captured, groups))
+    with pytest.raises(ValueError, match="ambiguous prediction sources"):
+        model_scores.load_model_scores_range(
+            "m1",
+            prediction_kind="research",
+            enabled=True,
+            mongo_uri="mongodb://x",
+        )
+
+
+def test_disjoint_sources_are_allowed(monkeypatch):
+    captured = {}
+    groups = [
+        {"_id": "source_a", "first": "20170424", "last": "20241119"},
+        {"_id": "source_b", "first": "20241217", "last": "20260909"},
+    ]
+    monkeypatch.setattr(model_scores, "MongoClient", _fake_client(captured, groups))
+    frame = model_scores.load_model_scores_range(
+        "m1",
+        prediction_kind="research",
+        enabled=True,
+        mongo_uri="mongodb://x",
+    )
+    assert frame.empty
+
+
+def test_prediction_source_selects_one_source(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(model_scores, "MongoClient", _fake_client(captured))
+    model_scores.load_model_scores_range(
+        "m1",
+        prediction_kind="research",
+        prediction_source="source_a",
+        enabled=True,
+        mongo_uri="mongodb://x",
+    )
+    assert captured["source"] == "source_a"
