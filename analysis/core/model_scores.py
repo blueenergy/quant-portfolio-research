@@ -57,6 +57,7 @@ def load_model_scores_range(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     prediction_kind: Optional[str] = None,
+    prediction_set_id: Optional[str] = None,
     prediction_source: Optional[str] = None,
     mongo_uri: Optional[str] = None,
     db_name: Optional[str] = None,
@@ -69,6 +70,11 @@ def load_model_scores_range(
     (live artifact rows, ``shadow=true``). ``None`` keeps the legacy behaviour
     and merges every row for the model_id; new research jobs pass ``research``
     explicitly so the end date cannot silently pull in shadow scores.
+
+    ``prediction_set_id`` is the exact series selector. When supplied, the
+    loader reads only that set and rejects archived/unknown sets; it does not
+    run the model_id/source heuristics. The fallback path keeps the legacy
+    model_id + kind behaviour and excludes archived sets.
 
     A model_id may also carry several research sources. Disjoint sources are
     treated as segments of one series (the 2017-2024 backfill plus its 2026
@@ -108,13 +114,46 @@ def load_model_scores_range(
     client = MongoClient(uri)
     try:
         predictions = client[db]["model_predictions"]
-        if not prediction_source:
-            _reject_overlapping_sources(
-                predictions,
-                query,
-                model_id=model_id,
-                prediction_kind=prediction_kind,
+        prediction_sets = client[db]["prediction_sets"]
+        if prediction_set_id:
+            set_doc = prediction_sets.find_one(
+                {"_id": prediction_set_id}, {"status": 1, "model_id": 1, "kind": 1}
             )
+            if not set_doc:
+                raise ValueError(f"unknown prediction_set_id: {prediction_set_id}")
+            if str(set_doc.get("status") or "") == "archived":
+                raise ValueError(f"prediction_set_id {prediction_set_id} is archived")
+            set_model = str(set_doc.get("model_id") or "")
+            if set_model and set_model != model_id:
+                raise ValueError(
+                    f"prediction_set_id {prediction_set_id} belongs to {set_model}, "
+                    f"not {model_id}"
+                )
+            set_kind = str(set_doc.get("kind") or "")
+            if prediction_kind and set_kind and set_kind != prediction_kind:
+                raise ValueError(
+                    f"prediction_set_id {prediction_set_id} is kind={set_kind}, "
+                    f"not {prediction_kind}"
+                )
+            query = {"prediction_set_id": prediction_set_id}
+            if prediction_source:
+                query["source"] = prediction_source
+            if date_filter:
+                query["trade_date"] = date_filter
+        else:
+            archived = [
+                doc["_id"]
+                for doc in prediction_sets.find({"status": "archived"}, {"_id": 1})
+            ]
+            if archived:
+                query["prediction_set_id"] = {"$nin": archived}
+            if not prediction_source:
+                _reject_overlapping_sources(
+                    predictions,
+                    query,
+                    model_id=model_id,
+                    prediction_kind=prediction_kind,
+                )
         rows = list(
             predictions.find(
                 query, {"_id": 0, "ts_code": 1, "score": 1, "trade_date": 1}
@@ -227,6 +266,7 @@ def merge_model_score_into_dataset(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     prediction_kind: Optional[str] = None,
+    prediction_set_id: Optional[str] = None,
     prediction_source: Optional[str] = None,
     column: str = "model_score",
     ffill_limit: int = 20,
@@ -241,8 +281,10 @@ def merge_model_score_into_dataset(
 
     ``prediction_kind`` selects ``research`` or ``shadow`` rows; ``None`` keeps
     the pre-P0 behaviour (all rows for the model_id) for legacy jobs.
-    ``prediction_source`` disambiguates a model_id with overlapping research
-    sources; disjoint sources are loaded together as one series.
+    ``prediction_set_id`` selects one exact series and takes precedence over the
+    model_id/kind heuristics. ``prediction_source`` disambiguates a model_id
+    with overlapping research sources; disjoint sources are loaded together as
+    one series.
     """
     if "score_date" not in dataset.columns or "symbol" not in dataset.columns:
         raise ValueError("dataset must include score_date and symbol")
@@ -251,6 +293,7 @@ def merge_model_score_into_dataset(
         start_date=start_date,
         end_date=end_date,
         prediction_kind=prediction_kind,
+        prediction_set_id=prediction_set_id,
         prediction_source=prediction_source,
         enabled=enabled,
     )

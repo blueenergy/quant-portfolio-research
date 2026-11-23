@@ -846,6 +846,8 @@ def run_research_job(
         # segments of one series; overlapping sources are ambiguous and the
         # loader refuses them unless this is set explicitly.
         prediction_source = str(params.get("prediction_source") or "").strip() or None
+        # Exact series selector; when present it wins over model_id/kind.
+        prediction_set_id = str(params.get("prediction_set_id") or "").strip() or None
         try:
             base_dataset = merge_model_score_into_dataset(
                 base_dataset,
@@ -853,6 +855,7 @@ def run_research_job(
                 start_date=start_date,
                 end_date=end_date,
                 prediction_kind=prediction_kind,
+                prediction_set_id=prediction_set_id,
                 prediction_source=prediction_source,
                 column="model_score",
                 ffill_limit=20,
@@ -862,11 +865,13 @@ def run_research_job(
             print(
                 f"model score merged: model_id={model_id} "
                 f"prediction_kind={prediction_kind or 'legacy'} "
+                f"prediction_set_id={prediction_set_id or 'auto'} "
                 f"prediction_source={prediction_source or 'auto'} "
                 f"rows={len(base_dataset)} filled={filled}",
                 flush=True,
             )
             payload["prediction_kind"] = prediction_kind
+            payload["prediction_set_id"] = prediction_set_id
             payload["prediction_source"] = prediction_source
             payload["prediction_set"] = {
                 "model_id": model_id,
